@@ -19,7 +19,8 @@ class ViewController: UIViewController {
         super.viewDidLoad()
         // Do any additional setup after loading the view, typically from a nib.
         tableView.re.dataSource = self
-        
+        tableView.re.delegate = self
+
         tableView.register(UINib(nibName: "TableViewCell", bundle: nil), forCellReuseIdentifier: "Cell")
         
         tableView.re.delegate = self
@@ -30,7 +31,7 @@ class ViewController: UIViewController {
             print("scrollViewDidReachBottom")
         }
         tableView.estimatedRowHeight = 56
-        tableView.rowHeight = UITableViewAutomaticDimension
+        tableView.rowHeight = UITableView.automaticDimension
     }
 
     override func didReceiveMemoryWarning() {
@@ -67,5 +68,9 @@ extension ViewController: UITableViewDataSource {
 extension ViewController: UITableViewDelegate {
     func scrollViewDidScroll(_ scrollView: UIScrollView) {
         print("scrollView.contentOffset.y =", scrollView.contentOffset.y)
+    }
+
+    func tableView(_ tableView: UITableView, editingStyleForRowAt indexPath: IndexPath) -> UITableViewCell.EditingStyle {
+        .none
     }
 }

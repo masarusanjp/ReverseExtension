@@ -50,9 +50,9 @@ extension UITableViewCell {
         static var frameObserver: UInt8 = 0
     }
     
-    var frameObserver: KeyValueObserver? {
+    var frameObserver: NSKeyValueObservation? {
         get {
-            return objc_getAssociatedObject(self, &AssociatedKey.frameObserver) as? KeyValueObserver
+            return objc_getAssociatedObject(self, &AssociatedKey.frameObserver) as? NSKeyValueObservation
         }
         set {
             objc_setAssociatedObject(self, &AssociatedKey.frameObserver, newValue, .OBJC_ASSOCIATION_RETAIN)
@@ -77,16 +77,9 @@ extension UITableView {
         }
         
         //MARK: Delegate
-        private var delegateTransporter: UITableViewDelegateTransporter? {
-            didSet { base?.delegate = delegateTransporter }
-        }
         public weak var delegate: UITableViewDelegate? {
             didSet {
-                guard let delegate = delegate else {
-                    delegateTransporter = nil
-                    return
-                }
-                delegateTransporter = UITableViewDelegateTransporter(delegates: [delegate, self])
+                base?.delegate = self
             }
         }
         public weak var dataSource: UITableViewDataSource? {
@@ -134,16 +127,7 @@ extension UITableView {
         private var lastScrollIndicatorInsets: UIEdgeInsets?
         private var lastContentInset: UIEdgeInsets?
         private var mutex = pthread_mutex_t()
-        fileprivate lazy var contentInsetObserver: KeyValueObserver? = {
-            guard let base = self.base else { return nil }
-            let keyPath: String
-            if #available(iOS 11, *) {
-                keyPath = #keyPath(UITableView.safeAreaInsets)
-            } else {
-                keyPath = #keyPath(UITableView.contentInset)
-            }
-            return KeyValueObserver(tareget: base, forKeyPath: keyPath)
-        }()
+        fileprivate var contentInsetObserver: NSKeyValueObservation?
         
         deinit {
             pthread_mutex_destroy(&mutex)
@@ -162,9 +146,12 @@ extension UITableView {
             if tableView.transform == CGAffineTransform.identity {
                 tableView.transform = CGAffineTransform.identity.rotated(by: .pi)
             }
-            contentInsetObserver?.didChange = { [weak self] _, _ in
-                DispatchQueue.main.async {
-                    self?.configureTableViewInsets()
+
+            if contentInsetObserver == nil {
+                contentInsetObserver = tableView.observe(\.safeAreaInsets) { [weak self] _, _ in
+                    DispatchQueue.main.async { [weak self] in
+                        self?.configureTableViewInsets()
+                    }
                 }
             }
         }
@@ -280,22 +267,22 @@ extension UITableView {
             return base?.footerView(forSection: section)
         }
         
-        public func scrollToRow(at indexPath: IndexPath, at scrollPosition: UITableViewScrollPosition, animated: Bool) {
+        public func scrollToRow(at indexPath: IndexPath, at scrollPosition: UITableView.ScrollPosition, animated: Bool) {
             let indexPath = reversedIndexPath(with: indexPath, fromReversed: true)
             base?.scrollToRow(at: indexPath, at: scrollPosition, animated: animated)
         }
         
-        public func insertSections(_ sections: IndexSet, with animation: UITableViewRowAnimation) {
+        public func insertSections(_ sections: IndexSet, with animation: UITableView.RowAnimation) {
             let newSections = IndexSet(sections.map { reversedSection(with: $0) })
             base?.insertSections(newSections, with: animation)
         }
         
-        public func deleteSections(_ sections: IndexSet, with animation: UITableViewRowAnimation) {
+        public func deleteSections(_ sections: IndexSet, with animation: UITableView.RowAnimation) {
             let newSections = IndexSet(sections.map { reversedSection(with: $0) })
             base?.deleteSections(newSections, with: animation)
         }
         
-        public func reloadSections(_ sections: IndexSet, with animation: UITableViewRowAnimation) {
+        public func reloadSections(_ sections: IndexSet, with animation: UITableView.RowAnimation) {
             let newSections = IndexSet(sections.map { reversedSection(with: $0) })
             base?.reloadSections(newSections, with: animation)
         }
@@ -306,17 +293,17 @@ extension UITableView {
             base?.moveSection(section, toSection: newSection)
         }
         
-        public func insertRows(at indexPaths: [IndexPath], with animation: UITableViewRowAnimation) {
+        public func insertRows(at indexPaths: [IndexPath], with animation: UITableView.RowAnimation) {
             let newIndexPaths = indexPaths.map { reversedIndexPath(with: $0, fromReversed: true) }
             base?.insertRows(at: newIndexPaths, with: animation)
         }
         
-        public func deleteRows(at indexPaths: [IndexPath], with animation: UITableViewRowAnimation) {
+        public func deleteRows(at indexPaths: [IndexPath], with animation: UITableView.RowAnimation) {
             let newIndexPaths = indexPaths.map { reversedIndexPath(with: $0, fromReversed: true) }
             base?.deleteRows(at: newIndexPaths, with: animation)
         }
         
-        public func reloadRows(at indexPaths: [IndexPath], with animation: UITableViewRowAnimation) {
+        public func reloadRows(at indexPaths: [IndexPath], with animation: UITableView.RowAnimation) {
             let newIndexPaths = indexPaths.map { reversedIndexPath(with: $0, fromReversed: true) }
             base?.reloadRows(at: newIndexPaths, with: animation)
         }
@@ -336,7 +323,7 @@ extension UITableView {
             return base?.indexPathsForSelectedRows?.map { reversedIndexPath(with: $0) }
         }
         
-        public func selectRow(at indexPath: IndexPath?, animated: Bool, scrollPosition: UITableViewScrollPosition) {
+        public func selectRow(at indexPath: IndexPath?, animated: Bool, scrollPosition: UITableView.ScrollPosition) {
             let newIndexPath: IndexPath?
             if let indexPath = indexPath {
                 newIndexPath = reversedIndexPath(with: indexPath, fromReversed: true)
@@ -367,25 +354,23 @@ extension UITableView.ReverseExtension: UITableViewDelegate {
     }
     
     public func tableView(_ tableView: UITableView, willDisplay cell: UITableViewCell, forRowAt indexPath: IndexPath) {
-        let frameObserver = KeyValueObserver(tareget: cell, forKeyPath: #keyPath(UITableView.frame))
-        frameObserver.didChange = { [weak self] object, change in
-            guard let change = change else { return }
-            DispatchQueue.global().async {
-                guard let x = (change[.newKey] as? NSValue)?.cgRectValue.origin.x, x > 0,
-                    let cell = object as? UITableViewCell
-                else { return }
+        cell.frameObserver = cell.observe(\.frame) { [weak self] (cell, change) in
+            DispatchQueue.global().async { [weak self] in
+
+                guard let x = change.newValue?.origin.x, x > 0 else { return }
                 let time = DispatchTime.now() + .milliseconds(10)
                 DispatchQueue.global().asyncAfter(deadline: time) { [weak cell] in
                     self?.configureCell(cell)
                 }
             }
         }
-        cell.frameObserver = frameObserver
         if cell.contentView.transform == CGAffineTransform.identity {
             UIView.setAnimationsEnabled(false)
             cell.contentView.transform = CGAffineTransform.identity.rotated(by: .pi)
             UIView.setAnimationsEnabled(true)
         }
+
+        delegate?.tableView?(tableView, willDisplay: cell, forRowAt: reversedIndexPath(with: indexPath))
     }
     
     public func tableView(_ tableView: UITableView, willDisplayHeaderView view: UIView, forSection section: Int) {
@@ -394,6 +379,8 @@ extension UITableView.ReverseExtension: UITableViewDelegate {
             view.transform = CGAffineTransform.identity.rotated(by: .pi)
             UIView.setAnimationsEnabled(true)
         }
+
+        delegate?.tableView?(tableView, willDisplayHeaderView: view, forSection: reversedSection(with: section))
     }
     
     public func tableView(_ tableView: UITableView, willDisplayFooterView view: UIView, forSection section: Int) {
@@ -402,6 +389,28 @@ extension UITableView.ReverseExtension: UITableViewDelegate {
             view.transform = CGAffineTransform.identity.rotated(by: .pi)
             UIView.setAnimationsEnabled(true)
         }
+
+        delegate?.tableView?(tableView, willDisplayFooterView: view, forSection: reversedSection(with: section))
+    }
+
+    public func tableView(_ tableView: UITableView, heightForHeaderInSection section: Int) -> CGFloat {
+        delegate?.tableView?(tableView, heightForHeaderInSection: reversedSection(with: section)) ?? .leastNonzeroMagnitude
+    }
+
+    public func tableView(_ tableView: UITableView, heightForFooterInSection section: Int) -> CGFloat {
+        delegate?.tableView?(tableView, heightForFooterInSection: reversedSection(with: section)) ?? .leastNonzeroMagnitude
+    }
+
+    public func tableView(_ tableView: UITableView, editingStyleForRowAt indexPath: IndexPath) -> UITableViewCell.EditingStyle {
+        delegate?.tableView?(tableView, editingStyleForRowAt: indexPath) ?? .delete
+    }
+
+    public func tableView(_ tableView: UITableView, trailingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        delegate?.tableView?(tableView, trailingSwipeActionsConfigurationForRowAt: indexPath)
+    }
+
+    public func tableView(_ tableView: UITableView, leadingSwipeActionsConfigurationForRowAt indexPath: IndexPath) -> UISwipeActionsConfiguration? {
+        delegate?.tableView?(tableView, leadingSwipeActionsConfigurationForRowAt: indexPath)
     }
 }
 
@@ -430,7 +439,19 @@ extension UITableView.ReverseExtension: UITableViewDataSource {
     public func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
         return dataSource?.tableView?(tableView, titleForHeaderInSection: reversedSection(with: section))
     }
-    
+
+    public func tableView(_ tableView: UITableView, viewForHeaderInSection section: Int) -> UIView? {
+        return delegate?.tableView?(tableView, viewForHeaderInSection: reversedSection(with: section))
+    }
+
+    public func tableView(_ tableView: UITableView, viewForFooterInSection section: Int) -> UIView? {
+        return delegate?.tableView?(tableView, viewForFooterInSection: reversedSection(with: section))
+    }
+
+    public func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        delegate?.tableView?(tableView, didSelectRowAt: reversedIndexPath(with: indexPath))
+    }
+
     // Editing
     
     // Individual rows can opt out of having the -editing property set for them. If not implemented, all rows are assumed to be editable.
@@ -461,7 +482,7 @@ extension UITableView.ReverseExtension: UITableViewDataSource {
     
     // After a row has the minus or plus button invoked (based on the UITableViewCellEditingStyle for the cell), the dataSource must commit the change
     // Not called for edit actions using UITableViewRowAction - the action's handler will be invoked instead
-    public func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCellEditingStyle, forRowAt indexPath: IndexPath) {
+    public func tableView(_ tableView: UITableView, commit editingStyle: UITableViewCell.EditingStyle, forRowAt indexPath: IndexPath) {
         dataSource?.tableView?(tableView, commit: editingStyle, forRowAt: reversedIndexPath(with: indexPath))
     }
     
